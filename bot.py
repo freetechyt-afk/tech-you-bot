@@ -22,7 +22,7 @@ if not BOT_TOKEN:
     if os.path.exists(token_path):
         with open(token_path, "r") as f:
             BOT_TOKEN = f.read().strip()
-WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzfPE0UQMqNil1FdhV7J_nZee5I5dQOzEBTQki99VlW-fxPDg5d8JqmkI7SexpXl08qIA/exec"
+WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzz1ajljW-WEYAIu4wv-PgFCJkDQ5fQ5fdWMvm-iGJfqjqvMqX3b0CWzPlG0iAB1cPP5w/exec"
 BOT_API_SECRET = "TECH_YOU_BOT_SECRET_2026"
 YOUTUBE_SUB_URL = "https://youtube.com/@techuk7?sub_confirmation=1"
 
