@@ -6,6 +6,8 @@ import os
 import csv
 import io
 import re
+import json
+import datetime
 import xml.etree.ElementTree as ET
 from aiohttp import web
 
@@ -41,6 +43,39 @@ g_last_posted_video_id = "YAUnKq0ZWi0"
 
 MEMBER_ROLE_NAMES = ["⚡ Tech You Legends ⚡", "⚡ Titans ⚡", "⚡ Supporters ⚡", "⭐ TECH YOU Member", "TECH YOU Member", "VIP Member", "Member"]
 VERIFIED_ROLE_NAMES = ["Verified", "verified", "Member", "member"]
+
+TRACKER_FILE = os.path.join(os.path.dirname(__file__), "user_activity.json")
+
+def load_tracker():
+    if os.path.exists(TRACKER_FILE):
+        try:
+            with open(TRACKER_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_tracker(data):
+    try:
+        with open(TRACKER_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving tracker: {e}")
+
+def log_activity_remote(discord_name, discord_id, youtube_handle, event, details):
+    try:
+        params = {
+            "action": "log_activity",
+            "secret": BOT_API_SECRET,
+            "discord_name": str(discord_name),
+            "discord_id": str(discord_id),
+            "youtube_handle": str(youtube_handle or "N/A"),
+            "event": str(event),
+            "details": str(details)
+        }
+        requests.get(WEB_APP_URL, params=params, timeout=5)
+    except Exception:
+        pass
 
 intents = discord.Intents.default()
 intents.members = True
@@ -179,13 +214,46 @@ class ClaimKeyModal(discord.ui.Modal, title="👑 Claim VIP Mod Key"):
                 ephemeral=True
             )
         else:
-            await interaction.followup.send(
-                f"❌ **Verification Failed:**\n"
-                f"यह YouTube Account (`{raw_val}`) हमारे एक्टिव मेंबर्स रिकॉर्ड में नहीं मिला।\n\n"
-                f"👉 कृपया वही Handle या Channel Link डालें जिससे आपने **TECH YOU** चैनल की मेंबरशिप ली है!\n"
-                f"मेंबरशिप लेने के लिए: https://youtube.com/@techuk7/join",
-                ephemeral=True
+            embed = discord.Embed(
+                title="🚨 VIP ACCESS DENIED - MEMBERSHIP REQUIRED",
+                description=(
+                    f"**नमस्ते {user.mention},**\n\n"
+                    f"❌ **दर्ज किया गया YouTube Account:** `{raw_val}`\n"
+                    f"🛑 **Status:** हमारे एक्टिव VIP मेंबर्स रिकॉर्ड में नहीं मिला!\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👑 **Real Life RP VIP Mod (v10.7.2) कैसे अनलॉक करें?**\n\n"
+                    f"यह मॉड केवल **TECH YOU YouTube Channel Members** के लिए एक्सक्लूसिव है।\n"
+                    f"नीचे दिए गए बटन पर क्लिक करके तुरंत चैनल की मेंबरशिप जॉइन करें:\n\n"
+                    f"• 🥇 **⚡ Tech You Legends ⚡**\n"
+                    f"• 🥈 **⚡ Titans ⚡**\n"
+                    f"• 🥉 **⚡ Supporters ⚡**\n\n"
+                    f"✅ **मेंबरशिप जॉइन करने के बाद** तुरंत यहाँ वापस आकर अपना Handle डालें, आपकी VIP Key तुरंत एक्टिव हो जाएगी!\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"▶️ **Direct Join Link:** https://youtube.com/@techuk7/join"
+                ),
+                color=0xff0055
             )
+            embed.set_footer(text="TECH YOU Gaming • Automated Security Gate")
+            await interaction.followup.send(embed=embed, view=JoinMembershipView(), ephemeral=True)
+
+# ------------------------------------------------------------------------------
+# JOIN MEMBERSHIP VIEW (FOR NON-MEMBERS)
+# ------------------------------------------------------------------------------
+class JoinMembershipView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="⚡ Join YouTube Membership Now",
+            style=discord.ButtonStyle.link,
+            url="https://youtube.com/@techuk7/join",
+            emoji="👑"
+        ))
+        self.add_item(discord.ui.Button(
+            label="▶️ Visit TECH YOU Channel",
+            style=discord.ButtonStyle.link,
+            url="https://youtube.com/@techuk7",
+            emoji="📺"
+        ))
 
 # ------------------------------------------------------------------------------
 # VIP KEY CLAIM VIEW (#🔑-claim-mod-key)
@@ -202,6 +270,80 @@ class KeyClaimView(discord.ui.View):
     )
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ClaimKeyModal())
+
+# ------------------------------------------------------------------------------
+# MODAL: YOUTUBE SUBSCRIPTION VERIFICATION & ACTIVE HANDLE AUDIT
+# ------------------------------------------------------------------------------
+class VerifySubscribeModal(discord.ui.Modal, title="🔓 Verify YouTube Subscription"):
+    yt_input = discord.ui.TextInput(
+        label="YouTube Username / Handle",
+        placeholder="e.g. @Mohit0306 or your YouTube Channel",
+        required=True,
+        max_length=100
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user
+        guild = interaction.guild
+        raw_val = self.yt_input.value.strip()
+
+        if not isinstance(user, discord.Member):
+            return
+
+        target_role = None
+        for r_name in VERIFIED_ROLE_NAMES:
+            r = discord.utils.get(guild.roles, name=r_name)
+            if r:
+                target_role = r
+                break
+        if not target_role:
+            for r in guild.roles:
+                if "verif" in r.name.lower():
+                    target_role = r
+                    break
+
+        if target_role:
+            try:
+                await user.add_roles(target_role)
+            except Exception as e:
+                print(f"Role assign error: {e}")
+
+        # Record in Activity Tracker
+        now_str = datetime.datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+        tracker = load_tracker()
+        u_id = str(user.id)
+        if u_id not in tracker:
+            tracker[u_id] = {
+                "name": f"{user.name}",
+                "yt_handle": raw_val,
+                "verified_at": now_str,
+                "status": "ACTIVE",
+                "strikes": 0,
+                "rejoins": 0,
+                "history": [f"[{now_str}] Verified with YouTube Handle: {raw_val}"]
+            }
+        else:
+            tracker[u_id]["yt_handle"] = raw_val
+            tracker[u_id]["status"] = "ACTIVE"
+            tracker[u_id]["history"].append(f"[{now_str}] Re-verified with handle: {raw_val}")
+        save_tracker(tracker)
+
+        # Log to Google Sheet Activity_Tracker tab
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, lambda: log_activity_remote(user.name, user.id, raw_val, "VERIFIED_STEP_1", "Unlocked Discord server"))
+
+        step1_success_msg = (
+            f"🎉 **सत्यापन सफल (Step 1 Complete)!**\n\n"
+            f"👤 **Registered YouTube Handle:** `{raw_val}` (Tracked in System)\n"
+            f"✅ आपका सर्वर अनलॉक हो चुका है!\n"
+            f"• `#🎁-free-mods` ➔ फ्री मोड्स और सॉफ्टवेयर डाउनलोड करें\n"
+            f"• `#general-chat` ➔ कम्युनिटी चैट में बातचीत करें\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👑 **STEP 2: VIP MODS & REAL LIFE RP ACCESS**\n"
+            f"अगर आप **TECH YOU YouTube Member** हैं, तो VIP Real Life RP Mod और Key अनलॉक करने के लिए `#🔑-claim-mod-key` में जाएं!"
+        )
+        await interaction.followup.send(step1_success_msg, ephemeral=True)
 
 # ------------------------------------------------------------------------------
 # STEP 1 VIEW: PUBLIC CHANNEL VERIFY-TO-UNLOCK PANEL
@@ -223,42 +365,98 @@ class Sub2UnlockStep1View(discord.ui.View):
         emoji="🔓"
     )
     async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VerifySubscribeModal())
+
+# ------------------------------------------------------------------------------
+# MODAL: STAY / APOLOGY VERIFICATION FOR QUARANTINED LEAVERS
+# ------------------------------------------------------------------------------
+class StayApologyModal(discord.ui.Modal, title="📋 Stay & Apology Verification"):
+    yt_input = discord.ui.TextInput(
+        label="Confirm your YouTube Handle / Channel",
+        placeholder="e.g. @Mohit0306",
+        required=True,
+        max_length=100
+    )
+    reason_input = discord.ui.TextInput(
+        label="Reason for leaving / Promise to stay",
+        style=discord.TextStyle.paragraph,
+        placeholder="Apology or why you left the server...",
+        required=True,
+        max_length=300
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         user = interaction.user
         guild = interaction.guild
+        raw_yt = self.yt_input.value.strip()
+        reason = self.reason_input.value.strip()
 
-        if not isinstance(user, discord.Member):
+        tracker = load_tracker()
+        u_id = str(user.id)
+        user_info = tracker.get(u_id, {})
+        strikes = user_info.get("strikes", 1)
+        now_str = datetime.datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+
+        if strikes >= 2:
+            await interaction.followup.send(
+                f"🛑 **Repeated Violation (Strike {strikes}):**\n"
+                f"आपने बार-बार सर्वर छोड़ा या अनसब्सक्राइब किया है। फॉर्म से सर्वर अनलॉक नहीं होगा!\n"
+                f"👉 केवल Sumit (Admin) से अपील करने के लिए **`#🔒-talk-to-admin`** में संपर्क करें!",
+                ephemeral=True
+            )
             return
 
-        target_role = None
+        quarantine_role = discord.utils.get(guild.roles, name="Quarantine")
+        if quarantine_role and quarantine_role in user.roles:
+            try:
+                await user.remove_roles(quarantine_role)
+            except Exception:
+                pass
+
+        verified_role = None
         for r_name in VERIFIED_ROLE_NAMES:
             r = discord.utils.get(guild.roles, name=r_name)
             if r:
-                target_role = r
+                verified_role = r
                 break
-
-        if not target_role:
-            for r in guild.roles:
-                if "verif" in r.name.lower():
-                    target_role = r
-                    break
-
-        if target_role:
+        if verified_role:
             try:
-                await user.add_roles(target_role)
-            except Exception as e:
+                await user.add_roles(verified_role)
+            except Exception:
                 pass
 
-        step1_success_msg = (
-            "🎉 **सत्यापन सफल (Step 1 Complete)!**\n\n"
-            "✅ आपका सर्वर अनलॉक हो चुका है!\n"
-            "• `#🎁-free-mods` ➔ फ्री मोड्स और सॉफ्टवेयर डाउनलोड करें\n"
-            "• `#general-chat` ➔ कम्युनिटी चैट में बातचीत करें\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "👑 **STEP 2: VIP MODS & REAL LIFE RP ACCESS**\n"
-            "अगर आप **TECH YOU YouTube Member** हैं, तो VIP Real Life RP Mod और Key अनलॉक करने के लिए `#🔑-claim-mod-key` में जाएं!"
+        if u_id not in tracker:
+            tracker[u_id] = {"name": user.name, "yt_handle": raw_yt, "strikes": 1, "rejoins": 1, "history": []}
+        tracker[u_id]["status"] = "PROBATION"
+        tracker[u_id]["history"].append(f"[{now_str}] Apology accepted: {reason[:80]}")
+        save_tracker(tracker)
+
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, lambda: log_activity_remote(user.name, user.id, raw_yt, "APOLOGY_ACCEPTED", f"Probation granted. Reason: {reason[:60]}"))
+
+        await interaction.followup.send(
+            f"✅ **Apology Accepted & Server Restored!**\n\n"
+            f"👤 **Account:** {user.mention}\n"
+            f"⚠️ **Warning (Probation Active):** आपका यह आखिरी मौका है। अगर आपने फिर से सर्वर छोड़ा या अनसब्सक्राइब किया, तो आपका इन-गेम मॉड और डिस्कॉर्ड दोनों permanently block कर दिए जाएंगे!",
+            ephemeral=True
         )
-        await interaction.followup.send(step1_success_msg, ephemeral=True)
+
+# ------------------------------------------------------------------------------
+# VIEW: STAY & APOLOGY FORM BUTTON
+# ------------------------------------------------------------------------------
+class StayFormView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="✍️ Submit Stay & Apology Form",
+        style=discord.ButtonStyle.primary,
+        custom_id="submit_stay_apology_form_btn",
+        emoji="📋"
+    )
+    async def stay_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(StayApologyModal())
 
 # ------------------------------------------------------------------------------
 # ADMIN COMMAND: 1-CLICK CSV FILE UPLOAD & ACCOUNTANT SYNC
@@ -266,7 +464,6 @@ class Sub2UnlockStep1View(discord.ui.View):
 @bot.command(name="update_members", aliases=["import_members", "sync_csv"])
 async def update_members(ctx):
     """Parses YouTube Studio CSV, updates 3 Tiers, and syncs Google Sheet"""
-    # Permission check (Admin or Server Owner)
     if not (ctx.author.guild_permissions.administrator or ctx.author == ctx.guild.owner):
         await ctx.send("⚠️ **Permission Denied:** यह कमांड केवल Sumit (Admin) के लिए है!")
         return
@@ -402,22 +599,88 @@ async def stats(ctx):
     await ctx.send(embed=embed)
 
 # ------------------------------------------------------------------------------
-# LEAVE EVENT (ANTI-PIRACY AUTO-REVOKE)
+# LEAVE & REJOIN AUDIT TRACKER (ANTI-PIRACY & QUARANTINE ENGINE)
 # ------------------------------------------------------------------------------
 @bot.event
 async def on_member_remove(member: discord.Member):
     print(f"⚠️ Member Left Server: {member.name} ({member.id})")
+    now_str = datetime.datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+    tracker = load_tracker()
+    u_id = str(member.id)
+    yt_h = "N/A"
+
+    if u_id in tracker:
+        tracker[u_id]["status"] = "LEFT_SERVER"
+        tracker[u_id]["strikes"] = tracker[u_id].get("strikes", 0) + 1
+        tracker[u_id]["last_left"] = now_str
+        tracker[u_id]["history"].append(f"[{now_str}] Left server (Total strikes: {tracker[u_id]['strikes']})")
+        yt_h = tracker[u_id].get("yt_handle", "N/A")
+        save_tracker(tracker)
+    else:
+        tracker[u_id] = {
+            "name": member.name,
+            "yt_handle": "N/A",
+            "status": "LEFT_SERVER",
+            "strikes": 1,
+            "rejoins": 0,
+            "last_left": now_str,
+            "history": [f"[{now_str}] Left server"]
+        }
+        save_tracker(tracker)
+
+    # 1. Revoke Key in Google Sheet
     params = {
         "action": "revoke_key",
         "secret": BOT_API_SECRET,
         "discord_id": str(member.id)
     }
+    loop = asyncio.get_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-        res = await loop.run_in_executor(None, lambda: requests.get(WEB_APP_URL, params=params, timeout=10))
-        print(f"Revoke response: {res.text}")
+        await loop.run_in_executor(None, lambda: requests.get(WEB_APP_URL, params=params, timeout=10))
     except Exception as e:
         print(f"Revoke error: {e}")
+
+    # 2. Log to Google Sheet Activity_Tracker
+    loop.run_in_executor(None, lambda: log_activity_remote(member.name, member.id, yt_h, "LEFT_SERVER", f"Revoked key & added Strike {tracker[u_id]['strikes']}"))
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    print(f"📥 Member Joined Server: {member.name} ({member.id})")
+    tracker = load_tracker()
+    u_id = str(member.id)
+    now_str = datetime.datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+
+    if u_id in tracker:
+        user_info = tracker[u_id]
+        strikes = user_info.get("strikes", 0)
+        user_info["rejoins"] = user_info.get("rejoins", 0) + 1
+        user_info["history"].append(f"[{now_str}] Rejoined server (Strikes: {strikes})")
+        save_tracker(tracker)
+
+        # Repeat leaver -> Move to Quarantine!
+        if strikes >= 1:
+            guild = member.guild
+            q_role = discord.utils.get(guild.roles, name="Quarantine")
+            if q_role:
+                try:
+                    await member.add_roles(q_role)
+                except Exception as e:
+                    print(f"Quarantine role assign error: {e}")
+
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, lambda: log_activity_remote(member.name, member.id, user_info.get("yt_handle", "N/A"), "REJOIN_QUARANTINE", f"Repeat joiner put in jail (Strikes: {strikes})"))
+            
+            try:
+                await member.send(
+                    f"⚠️ **TECH YOU Security Notice:**\n"
+                    f"आपने पहले सर्वर छोड़ा था। आपका सर्वर एक्सेस क्वारंटाइन (Locked) कर दिया गया है।\n"
+                    f"सर्वर दोबारा चालू करने के लिए `#📋-stay-form` में फॉर्म भरें!"
+                )
+            except Exception:
+                pass
+    else:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, lambda: log_activity_remote(member.name, member.id, "N/A", "FIRST_JOIN", "Joined server fresh"))
 
 # ------------------------------------------------------------------------------
 # AUTOMATIC YOUTUBE VIDEO ALERT CHECKER (EVERY 2 MINUTES)
@@ -509,6 +772,130 @@ async def setup_claim(ctx):
     await ctx.message.delete()
 
 # ------------------------------------------------------------------------------
+# ADMIN COMMAND: SETUP STAY & APOLOGY PANEL (!setup_stay_form)
+# ------------------------------------------------------------------------------
+@bot.command(name="setup_stay_form")
+async def setup_stay_form(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.author == ctx.guild.owner):
+        return
+    embed = discord.Embed(
+        title="📋 TECH YOU - STAY & RE-VERIFICATION GATE",
+        description=(
+            "**⚠️ Security Notice for Quarantined Members:**\n\n"
+            "हमारे सिस्टम ने डिटेक्ट किया है कि आपने पहले सर्वर छोड़ा था या अनसब्सक्राइब किया था।\n\n"
+            "सर्वर और मोड्स दोबारा अनलॉक करने के लिए:\n"
+            "1️⃣ नीचे दिए गए **[✍️ Submit Stay & Apology Form]** बटन पर क्लिक करें।\n"
+            "2️⃣ अपना YouTube Handle और वजह दर्ज करें।\n\n"
+            "⚡ फॉर्म सबमिट करते ही आपका सर्वर प्रोबेशन पर री-ओपन हो जाएगा!\n"
+            "🛑 *Note: बार-बार छोड़ने वालों को केवल Admin Support से ही अनब्लॉक किया जाएगा।*"
+        ),
+        color=0xffb830
+    )
+    await ctx.send(embed=embed, view=StayFormView())
+    await ctx.message.delete()
+
+# ------------------------------------------------------------------------------
+# ADMIN COMMAND: AUDIT & TRACK USER (!track @user / !track <id>)
+# ------------------------------------------------------------------------------
+@bot.command(name="track", aliases=["audit", "userinfo"])
+async def track_user(ctx, target: str = None):
+    if not (ctx.author.guild_permissions.administrator or ctx.author == ctx.guild.owner):
+        return
+
+    if not target:
+        await ctx.send("⚠️ Usage: `!track @user` ya `!track <discord_id>`")
+        return
+
+    user_id = target.replace("<@", "").replace(">", "").replace("!", "").strip()
+    tracker = load_tracker()
+
+    if user_id not in tracker:
+        await ctx.send(f"ℹ️ User ID `{user_id}` ka koi activity record nahi mila.")
+        return
+
+    d = tracker[user_id]
+    history_text = "\n".join(d.get("history", [])[-5:]) or "No history recorded."
+
+    embed = discord.Embed(
+        title=f"🔍 USER AUDIT FILE: {d.get('name', 'Unknown')}",
+        description=(
+            f"🆔 **Discord ID:** `{user_id}`\n"
+            f"📺 **YouTube Handle:** `{d.get('yt_handle', 'N/A')}`\n"
+            f"🚦 **Status:** `{d.get('status', 'ACTIVE')}`\n"
+            f"🛑 **Strikes Count:** `{d.get('strikes', 0)}`\n"
+            f"🔄 **Re-joins Count:** `{d.get('rejoins', 0)}`\n"
+            f"📅 **First Verified:** `{d.get('verified_at', 'N/A')}`\n\n"
+            f"📜 **Recent Activity Log:**\n```\n{history_text}\n```"
+        ),
+        color=0x00e5ff
+    )
+    await ctx.send(embed=embed)
+
+# ------------------------------------------------------------------------------
+# ADMIN COMMAND: BAN USER FOREVER (!ban_user @user [reason])
+# ------------------------------------------------------------------------------
+@bot.command(name="ban_user")
+async def ban_user(ctx, member: discord.Member, *, reason: str = "Violated Rules / Left Server"):
+    if not (ctx.author.guild_permissions.administrator or ctx.author == ctx.guild.owner):
+        return
+
+    u_id = str(member.id)
+    tracker = load_tracker()
+    yt_h = "N/A"
+    now_str = datetime.datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+
+    if u_id in tracker:
+        tracker[u_id]["status"] = "BANNED"
+        tracker[u_id]["strikes"] = 99
+        tracker[u_id]["history"].append(f"[{now_str}] Permanently banned by Admin: {reason}")
+        yt_h = tracker[u_id].get("yt_handle", "N/A")
+        save_tracker(tracker)
+
+    # Revoke Key in Google Sheet
+    params = {"action": "revoke_key", "secret": BOT_API_SECRET, "discord_id": u_id}
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, lambda: requests.get(WEB_APP_URL, params=params, timeout=10))
+    except Exception:
+        pass
+
+    loop.run_in_executor(None, lambda: log_activity_remote(member.name, member.id, yt_h, "ADMIN_BANNED", f"Reason: {reason}"))
+
+    try:
+        await member.ban(reason=reason)
+        await ctx.send(f"🛑 **User Banned:** {member.mention} has been permanently blocked from Discord, Google Sheet & GTA 5 In-Game Mod!")
+    except Exception as e:
+        await ctx.send(f"⚠️ Ban failed: `{e}`")
+
+# ------------------------------------------------------------------------------
+# ADMIN COMMAND: PARDON USER (!pardon @user)
+# ------------------------------------------------------------------------------
+@bot.command(name="pardon")
+async def pardon_user(ctx, member: discord.Member):
+    if not (ctx.author.guild_permissions.administrator or ctx.author == ctx.guild.owner):
+        return
+
+    u_id = str(member.id)
+    tracker = load_tracker()
+    now_str = datetime.datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+
+    if u_id in tracker:
+        tracker[u_id]["status"] = "ACTIVE"
+        tracker[u_id]["strikes"] = 0
+        tracker[u_id]["history"].append(f"[{now_str}] Pardoned by Admin")
+        save_tracker(tracker)
+
+    q_role = discord.utils.get(ctx.guild.roles, name="Quarantine")
+    if q_role and q_role in member.roles:
+        await member.remove_roles(q_role)
+
+    v_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    if v_role:
+        await member.add_roles(v_role)
+
+    await ctx.send(f"✅ **Pardoned:** {member.mention} ki sabhi strikes clear kar di gayi hain aur access restore ho gaya!")
+
+# ------------------------------------------------------------------------------
 # BOT ON_READY EVENT
 # ------------------------------------------------------------------------------
 @bot.event
@@ -519,6 +906,7 @@ async def on_ready():
 
     bot.add_view(KeyClaimView())
     bot.add_view(Sub2UnlockStep1View())
+    bot.add_view(StayFormView())
 
     if not hasattr(bot, "_yt_checker_started"):
         bot._yt_checker_started = True
